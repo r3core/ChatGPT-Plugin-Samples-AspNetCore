@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Collections.Concurrent;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -9,6 +9,8 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.AddCors(
     options => options.AddDefaultPolicy(corsPolicyBuilder => corsPolicyBuilder.WithOrigins("https://chat.openai.com")));
+
+builder.Services.AddSingleton(new ConcurrentDictionary<string, List<TodoItem>>());
 
 WebApplication app = builder.Build();
 
@@ -23,10 +25,15 @@ app.UseHttpsRedirection();
 
 app.MapPost(
         pattern: "/todos/{username}",
-        (string username, TodoItem todo, HttpContext context) =>
+        (string username, TodoItem todo, ConcurrentDictionary<string, List<TodoItem>> todos, HttpContext context) =>
         {
-            var todos = context.Items.GetOrCreate<List<TodoItem>>(username);
-            todos.Add(todo);
+            if (!todos.TryGetValue(username, out List<TodoItem>? userTodos))
+            {
+                userTodos = new List<TodoItem>();
+                todos.TryAdd(username, userTodos);
+            }
+
+            userTodos.Add(todo);
             context.Response.StatusCode = StatusCodes.Status200OK;
         })
    .WithName("AddTodo")
@@ -34,26 +41,27 @@ app.MapPost(
 
 app.MapGet(
         pattern: "/todos/{username}",
-        (string username, HttpContext context) =>
+        async (string username, ConcurrentDictionary<string, List<TodoItem>> todos, HttpContext context) =>
         {
-            var todos = context.Items.GetOrCreate<List<TodoItem>>(username);
-            context.Response.ContentType = "application/json";
+            if (!todos.TryGetValue(username, out List<TodoItem>? userTodos))
+            {
+                userTodos = new List<TodoItem>();
+            }
 
-            return JsonSerializer.Serialize(todos);
+            await context.Response.WriteAsJsonAsync(userTodos);
         })
    .WithName("GetTodos")
    .WithOpenApi();
 
 app.MapDelete(
         pattern: "/todos/{username}",
-        (string username, int todoIdx, HttpContext context) =>
+        (string username, int todoIdx, ConcurrentDictionary<string, List<TodoItem>> todos, HttpContext context) =>
         {
-            var todos = context.Items.GetOrCreate<List<TodoItem>>(username);
-
-            if (0 <= todoIdx
-             && todoIdx < todos.Count)
+            if (todos.TryGetValue(username, out List<TodoItem>? userTodos)
+             && 0 <= todoIdx
+             && todoIdx < userTodos.Count)
             {
-                todos.RemoveAt(todoIdx);
+                userTodos.RemoveAt(todoIdx);
             }
 
             context.Response.StatusCode = StatusCodes.Status200OK;
